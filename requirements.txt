@@ -1,0 +1,11 @@
+flask
+flask-cors
+bcrypt
+psycopg2-binary
+numpy
+pandas
+scikit-learn
+tensorflow-cpu
+werkzeug
+requests
+gunicorn
