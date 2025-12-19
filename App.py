@@ -8,6 +8,15 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import os, requests
 import datetime
 
+# ===========================
+# PATH RELATIVE (WAJIB)
+# ===========================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+MODEL_PATH = os.path.join(BASE_DIR, "models", "model_cuaca.keras")
+DATASET_PATH = os.path.join(BASE_DIR, "data_cuaca.csv")
+
+
 # ===========================================================
 # ⚙️ KONFIGURASI DASAR
 # ===========================================================
@@ -24,13 +33,12 @@ CORS(app, resources={
     }
 })
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL environment variable not set")
 
 def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL belum diset di environment")
+    return psycopg2.connect(database_url)
 
 
 # ===========================
@@ -54,7 +62,10 @@ def log_activity(user_id, username, role, action, description, ip_address=None):
 # ===========================
 #  KONFIGURASI API OPENWEATHER
 # ===========================
-OPENWEATHER_API_KEY = "c91b0fa374f991fb0da760d7c98d8f7f"
+OPENWEATHER_API_KEY = os.getenv ("c91b0fa374f991fb0da760d7c98d8f7f")
+
+if not OPENWEATHER_API_KEY:
+    print("⚠️ OPENWEATHER_API_KEY belum diset")
 
 # ===========================
 #  LAZY LOADING untuk ML Libraries
@@ -92,7 +103,7 @@ def get_weather_model():
     
     if _weather_model is None:
         ml = get_ml_modules()
-        model_path = r"C:\Users\gl65\Desktop\Project1\backend\models\model_cuaca.keras"
+        model_path = MODEL_PATH
         
         if os.path.exists(model_path):
             _weather_model = ml['load_model'](model_path, compile=False)
@@ -1023,7 +1034,7 @@ def load_dataset():
     ml = get_ml_modules()
     pd = ml['pd']
     
-    df = pd.read_csv(r"C:\Users\gl65\Desktop\Project1\backend\data_cuaca.csv", delimiter=';')
+    df = pd.read_csv(DATASET_PATH, delimiter=';')
 
     if "temp_rata-rata" in df.columns:
         df.rename(columns={"temp_rata-rata": "temperature"}, inplace=True)
