@@ -23,16 +23,16 @@ DATASET_PATH = os.path.join(BASE_DIR, "data_cuaca.csv")
 
 app = Flask(__name__)
 CORS(app, resources={
-       r"/*": {
-           "origins": [
-               "https://permanagis.vercel.app",
-               "https://*.vercel.app",
-               "https://your-flask-api.railway.app",  # Tambah ini
-               "http://localhost:5173",
-               "http://localhost:3000"
-           ]
-       }
-   })
+    r"/*": {
+        "origins": [
+            "https://permanagis.vercel.app",
+            "https://*.vercel.app",
+            "https://web-production-b220a.up.railway.app",  # Backend Railway
+            "http://localhost:5173",
+            "http://localhost:3000"
+        ]
+    }
+})
 
 
 def get_conn():
