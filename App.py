@@ -13,18 +13,43 @@ import datetime
 # ===========================================================
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app, resources={
+    r"/*": {
+        "origins": [
+            "https://permanagis.vercel.app",
+            "https://*.vercel.app",  # Allow all Vercel preview deployments
+            "http://localhost:5173",  # Local development
+            "http://localhost:3000"
+        ]
+    }
+})
 
-DB_CONFIG = {
-    "dbname": "Permana",
-    "user": "postgres",
-    "password": "Meja*4724",
-    "host": "localhost",
-    "port": "5432"
-}
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable not set")
 
 def get_conn():
-    return psycopg2.connect(**DB_CONFIG)
+    return psycopg2.connect(DATABASE_URL)
+
+
+# ===========================
+#  HELPER: LOG ACTIVITY
+# ===========================
+def log_activity(user_id, username, role, action, description, ip_address=None):
+    """Helper function to log user activities"""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO activity_logs (user_id, username, role, action, description, ip_address)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (user_id, username, role, action, description, ip_address))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[ERROR] Log activity failed: {e}")
 
 # ===========================
 #  KONFIGURASI API OPENWEATHER
@@ -85,7 +110,7 @@ def get_weather_model():
 
     
 # ===========================================================
-# LOGIN STAFF & ADMIN
+# LOGIN STAFF & ADMIN (WITH LOGGING)
 # ===========================================================
     
 @app.route("/api/auth/login", methods=["POST"])
@@ -93,6 +118,7 @@ def login():
     data = request.get_json()
     username = data.get("username")
     password = data.get("password")
+    ip_address = request.remote_addr
 
     conn = get_conn()
     cur = conn.cursor()
@@ -107,6 +133,9 @@ def login():
         # ✅ Admin menggunakan bcrypt
         if password_hash.startswith("$2a$") or password_hash.startswith("$2b$"):
             if bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8")):
+                # 📝 LOG ACTIVITY
+                log_activity(user[0], user[1], 'admin', 'login', f'Admin {user[1]} logged in', ip_address)
+                
                 cur.close()
                 conn.close()
                 return jsonify({
@@ -128,6 +157,9 @@ def login():
         
         # ✅ Staff menggunakan werkzeug (dari register)
         if check_password_hash(password_hash, password):
+            # 📝 LOG ACTIVITY
+            log_activity(user[0], user[1], 'staff', 'login', f'Staff {user[1]} logged in', ip_address)
+            
             cur.close()
             conn.close()
             return jsonify({
@@ -253,12 +285,16 @@ def get_pending_staff():
         return jsonify({"error": str(e)}), 500
 
 # ===========================================================
-# APPROVE STAFF
+# APPROVE STAFF (WITH LOGGING)
 # ===========================================================
 
 @app.route("/api/staff/<int:id>/approve", methods=["POST"])
 def approve_staff(id):
     try:
+        # Get admin info from request headers (sent from frontend)
+        admin_username = request.headers.get('X-User-Username', 'Unknown Admin')
+        admin_id = request.headers.get('X-User-Id', 0)
+        
         conn = get_conn()
         cur = conn.cursor()
 
@@ -284,6 +320,17 @@ def approve_staff(id):
         # Update pending_user → approved
         cur.execute("UPDATE pending_user SET status='approved' WHERE id=%s", (id,))
         conn.commit()
+        
+        # 📝 LOG ACTIVITY
+        log_activity(
+            admin_id, 
+            admin_username, 
+            'admin', 
+            'approve_staff', 
+            f'Admin {admin_username} approved staff registration for {username} ({fullname})',
+            request.remote_addr
+        )
+        
         cur.close()
         conn.close()
 
@@ -293,17 +340,37 @@ def approve_staff(id):
         return jsonify({"success": False, "error": str(e)}), 500
     
 # ===========================================================
-# REJECT STAFF
+# REJECT STAFF (WITH LOGGING)
 # ===========================================================
 
 @app.route("/api/staff/<int:id>/reject", methods=["POST"])
 def reject_staff(id):
     try:
+        # Get admin info from request headers
+        admin_username = request.headers.get('X-User-Username', 'Unknown Admin')
+        admin_id = request.headers.get('X-User-Id', 0)
+        
         conn = get_conn()
         cur = conn.cursor()
+        
+        # Get pending user info before rejecting
+        cur.execute("SELECT username, fullname FROM pending_user WHERE id=%s", (id,))
+        pending_user = cur.fetchone()
 
         cur.execute("UPDATE pending_user SET status='rejected' WHERE id=%s", (id,))
         conn.commit()
+        
+        # 📝 LOG ACTIVITY
+        if pending_user:
+            log_activity(
+                admin_id,
+                admin_username,
+                'admin',
+                'reject_staff',
+                f'Admin {admin_username} rejected staff registration for {pending_user[0]} ({pending_user[1]})',
+                request.remote_addr
+            )
+        
         cur.close()
         conn.close()
 
@@ -354,24 +421,39 @@ def get_all_users():
 
 
 # ===========================================================
-# DELETE USER (ADMIN or STAFF)
+# DELETE USER (WITH LOGGING)
 # ===========================================================
 
 @app.route("/api/admin/users/<int:user_id>", methods=["DELETE"])
 def delete_user(user_id):
     """Delete user dari tabel admins atau staff"""
     try:
+        # Get admin info from request headers
+        admin_username = request.headers.get('X-User-Username', 'Unknown Admin')
+        admin_id = request.headers.get('X-User-Id', 0)
+        
         conn = get_conn()
         cur = conn.cursor()
         
         # Cek apakah user ada di tabel admins
-        cur.execute("SELECT id FROM admins WHERE id = %s", (user_id,))
+        cur.execute("SELECT id, username FROM admins WHERE id = %s", (user_id,))
         admin = cur.fetchone()
         
         if admin:
             cur.execute("DELETE FROM admins WHERE id = %s RETURNING id", (user_id,))
             deleted = cur.fetchone()
             conn.commit()
+            
+            # 📝 LOG ACTIVITY
+            log_activity(
+                admin_id,
+                admin_username,
+                'admin',
+                'delete_user',
+                f'Admin {admin_username} deleted admin user {admin[1]} (ID: {user_id})',
+                request.remote_addr
+            )
+            
             cur.close()
             conn.close()
             
@@ -379,13 +461,24 @@ def delete_user(user_id):
                 return jsonify({"success": True, "message": "Admin berhasil dihapus"}), 200
         
         # Jika tidak ada di admins, cek di staff
-        cur.execute("SELECT id FROM staff WHERE id = %s", (user_id,))
+        cur.execute("SELECT id, username, fullname FROM staff WHERE id = %s", (user_id,))
         staff = cur.fetchone()
         
         if staff:
             cur.execute("DELETE FROM staff WHERE id = %s RETURNING id", (user_id,))
             deleted = cur.fetchone()
             conn.commit()
+            
+            # 📝 LOG ACTIVITY
+            log_activity(
+                admin_id,
+                admin_username,
+                'admin',
+                'delete_user',
+                f'Admin {admin_username} deleted staff user {staff[1]} ({staff[2]}, ID: {user_id})',
+                request.remote_addr
+            )
+            
             cur.close()
             conn.close()
             
@@ -496,7 +589,7 @@ def get_nearest_poles_ml():
         return jsonify({"error": str(e)}), 500
 
 # ===========================================================
-# POLES CRUD
+# POLES CRUD (WITH LOGGING)
 # ===========================================================
 POLES_ALIAS = {
     "odp": "odp_poles",
@@ -542,6 +635,11 @@ def create_pole(poles):
 
     data = request.get_json()
 
+    # Get user info from request headers
+    username = request.headers.get('X-User-Username', 'Unknown User')
+    user_id = request.headers.get('X-User-Id', 0)
+    user_role = request.headers.get('X-User-Role', 'staff')
+
     required = ["poles_code", "lat", "lon"]
     for r in required:
         if r not in data:
@@ -576,6 +674,17 @@ def create_pole(poles):
 
     new_id = cur.fetchone()[0]
     conn.commit()
+    
+    # 📝 LOG ACTIVITY
+    log_activity(
+        user_id,
+        username,
+        user_role,
+        'create_pole',
+        f'{username} created new {poles.upper()} pole: {poles_code} at {location}',
+        request.remote_addr
+    )
+    
     cur.close()
     conn.close()
 
@@ -588,6 +697,11 @@ def update_pole(poles, id):
         return jsonify({"error": "Invalid poles type"}), 400
 
     data = request.get_json()
+
+    # Get user info from request headers
+    username = request.headers.get('X-User-Username', 'Unknown User')
+    user_id = request.headers.get('X-User-Id', 0)
+    user_role = request.headers.get('X-User-Role', 'staff')
 
     poles_code = data.get("poles_code")
     marking_date = data.get("marking_date")
@@ -619,6 +733,18 @@ def update_pole(poles, id):
     updated = cur.fetchone()
 
     conn.commit()
+    
+    # 📝 LOG ACTIVITY
+    if updated:
+        log_activity(
+            user_id,
+            username,
+            user_role,
+            'update_pole',
+            f'{username} updated {poles.upper()} pole ID {id}: {poles_code} at {location}',
+            request.remote_addr
+        )
+    
     cur.close()
     conn.close()
 
@@ -633,12 +759,34 @@ def delete_pole(poles, id):
     if not table:
         return jsonify({"error": "Invalid poles type"}), 400
 
+    # Get user info from request headers
+    username = request.headers.get('X-User-Username', 'Unknown User')
+    user_id = request.headers.get('X-User-Id', 0)
+    user_role = request.headers.get('X-User-Role', 'admin')
+
     conn = get_conn()
     cur = conn.cursor()
+    
+    # Get pole info before deleting
+    cur.execute(f"SELECT poles_code, location FROM {table} WHERE id = %s", (id,))
+    pole_info = cur.fetchone()
+    
     cur.execute(f"DELETE FROM {table} WHERE id = %s RETURNING id;", (id,))
     deleted = cur.fetchone()
 
     conn.commit()
+    
+    # 📝 LOG ACTIVITY
+    if deleted and pole_info:
+        log_activity(
+            user_id,
+            username,
+            user_role,
+            'delete_pole',
+            f'{username} deleted {poles.upper()} pole ID {id}: {pole_info[0]} at {pole_info[1]}',
+            request.remote_addr
+        )
+    
     cur.close()
     conn.close()
 
@@ -649,7 +797,7 @@ def delete_pole(poles, id):
 
     
 # ===========================================================
-# ODP PORTS
+# ODP PORTS (WITH LOGGING)
 # ===========================================================
 
 @app.route("/api/odp/<int:odp_id>/ports", methods=["GET"])
@@ -685,6 +833,12 @@ def get_odp_ports(odp_id):
 def create_or_update_odp_port(odp_id):
     """Insert / Update satu port"""
     data = request.get_json()
+    
+    # Get user info from request headers
+    username = request.headers.get('X-User-Username', 'Unknown User')
+    user_id = request.headers.get('X-User-Id', 0)
+    user_role = request.headers.get('X-User-Role', 'staff')
+    
     port_number = data.get("port_number")
     ip_address = data.get("ip_address")
     customer_name = data.get("customer_name")
@@ -697,6 +851,12 @@ def create_or_update_odp_port(odp_id):
 
     conn = get_conn()
     cur = conn.cursor()
+    
+    # Check if port exists to determine action type
+    cur.execute("SELECT id FROM odp_ports WHERE odp_id = %s AND port_number = %s", (odp_id, port_number))
+    existing_port = cur.fetchone()
+    action_type = 'update_port' if existing_port else 'create_port'
+    
     cur.execute("""
         INSERT INTO odp_ports (odp_id, port_number, ip_address, customer_name, owner, status, notes)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -712,6 +872,17 @@ def create_or_update_odp_port(odp_id):
     """, (odp_id, port_number, ip_address, customer_name, owner, status, notes))
     new_id = cur.fetchone()[0]
     conn.commit()
+    
+    # 📝 LOG ACTIVITY
+    log_activity(
+        user_id,
+        username,
+        user_role,
+        action_type,
+        f'{username} {"updated" if action_type == "update_port" else "created"} ODP port {port_number} for ODP ID {odp_id}: {customer_name}',
+        request.remote_addr
+    )
+    
     cur.close()
     conn.close()
     return jsonify({"success": True, "id": new_id})
@@ -720,17 +891,93 @@ def create_or_update_odp_port(odp_id):
 @app.route("/api/odp_ports/<int:port_id>", methods=["DELETE"])
 def delete_odp_port(port_id):
     """Hapus port tertentu"""
+    # Get user info from request headers
+    username = request.headers.get('X-User-Username', 'Unknown User')
+    user_id = request.headers.get('X-User-Id', 0)
+    user_role = request.headers.get('X-User-Role', 'admin')
+    
     conn = get_conn()
     cur = conn.cursor()
+    
+    # Get port info before deleting
+    cur.execute("SELECT odp_id, port_number, customer_name FROM odp_ports WHERE id = %s", (port_id,))
+    port_info = cur.fetchone()
+    
     cur.execute("DELETE FROM odp_ports WHERE id = %s RETURNING id;", (port_id,))
     deleted = cur.fetchone()
     conn.commit()
+    
+    # 📝 LOG ACTIVITY
+    if deleted and port_info:
+        log_activity(
+            user_id,
+            username,
+            user_role,
+            'delete_port',
+            f'{username} deleted port {port_info[1]} from ODP ID {port_info[0]}: {port_info[2]}',
+            request.remote_addr
+        )
+    
     cur.close()
     conn.close()
 
     if not deleted:
         return jsonify({"error": "Port not found"}), 404
     return jsonify({"success": True})
+
+
+# ===========================================================
+# 📊 GET ACTIVITY LOGS (NEW ENDPOINT)
+# ===========================================================
+
+@app.route("/api/admin/activity-logs", methods=["GET"])
+def get_activity_logs():
+    """Get all activity logs for admin dashboard"""
+    try:
+        # Optional: pagination
+        limit = request.args.get('limit', 100, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT id, user_id, username, role, action, description, ip_address, created_at
+            FROM activity_logs
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+        """, (limit, offset))
+        
+        rows = cur.fetchall()
+        
+        # Get total count
+        cur.execute("SELECT COUNT(*) FROM activity_logs")
+        total_count = cur.fetchone()[0]
+        
+        cur.close()
+        conn.close()
+
+        result = [{
+            "id": r[0],
+            "user_id": r[1],
+            "username": r[2],
+            "role": r[3],
+            "action": r[4],
+            "description": r[5],
+            "ip_address": r[6],
+            "created_at": str(r[7])
+        } for r in rows]
+
+        return jsonify({
+            "logs": result,
+            "total": total_count,
+            "limit": limit,
+            "offset": offset
+        }), 200
+
+    except Exception as e:
+        print("[ERROR] get_activity_logs:", e)
+        return jsonify({"error": str(e)}), 500
 
 
 # ===========================================================
@@ -874,4 +1121,5 @@ def predict_weather():
 if __name__ == "__main__":
     print("✅ Flask Server starting...")
     print("⚡ ML libraries akan dimuat saat pertama kali digunakan")
+    print("📝 Activity logging is enabled")
     app.run(debug=True, port=5000)
