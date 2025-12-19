@@ -36,7 +36,7 @@ CORS(app, resources={
 
 
 def get_conn():
-    database_url = os.getenv("DATABASE_URL")
+    database_url = os.getenv("postgresql://postgres:POigXlVfdYDUehqdwVWrCVjexJIxcujl@postgres-s9aw.railway.internal:5432/railway")
     if not database_url:
         raise RuntimeError("DATABASE_URL belum diset di environment")
     return psycopg2.connect(database_url)
